@@ -1051,6 +1051,55 @@ fn test_range() {
 }
 
 #[test]
+fn test_s_string_formatting_preserved() {
+    assert_display_snapshot!((compile(r###"
+    from df
+    derive [
+       cc = s"1.34e-5" * a
+    ]
+    "###).unwrap()), @r###"
+    SELECT
+      *,
+      1.34e-5 * a AS cc
+    FROM
+      df
+    "###);
+}
+
+#[test]
+fn test_s_string_no_format() {
+    let options = sql::Options::default().no_signature().no_format().some();
+
+    assert_display_snapshot!((crate::compile(r###"
+    from df
+    derive [
+       cc = s"1.34e-5" * a
+    ]
+    "###, options).unwrap()), @r###"
+    SELECT *, 1.34e-5 * a AS cc FROM df
+    "###);
+}
+
+/*
+#[ignore]
+#[test]
+fn test_take_float_addition_gives_integer() {
+    // TODO:
+    // - A literal containing floats that is an integer should be accepted by take.
+    // - Or the error message corrected from "`take` expected int or range, but found 1"
+    assert_display_snapshot!((compile(r###"
+    from employees | take (0.5+0.5)
+    "###).unwrap()), @r###"
+    SELECT
+      *
+    FROM
+      employees
+    LIMIT
+      1
+    "###);
+}*/
+
+#[test]
 fn test_distinct() {
     // window functions cannot materialize into where statement: CTE is needed
     assert_display_snapshot!((compile(r###"
@@ -1247,7 +1296,11 @@ fn test_f_string() {
         ' ',
         last_name
       ),
-      CONCAT('and I am ', year_born - now(), ' years old.')
+      CONCAT(
+        'and I am ',
+        year_born - now(),
+        ' years old.'
+      )
     FROM
       employees
     "###
@@ -1308,10 +1361,10 @@ fn test_bare_s_string() {
     WITH table_0 AS (
       SELECT
         SUM(a)
-      FROM
-        tbl
-      GROUP BY
-        GROUPING SETS ((b, c, d), (d), (b, d))
+            FROM tbl
+            GROUP BY
+              GROUPING SETS
+              ((b, c, d), (d), (b, d))
     ),
     grouping AS (
       SELECT
@@ -2066,12 +2119,7 @@ fn test_table_s_string() {
         @r###"
     WITH table_1 AS (
       SELECT
-        DISTINCT ON first_name,
-        age
-      FROM
-        employees
-      ORDER BY
-        age ASC
+        DISTINCT ON first_name, age FROM employees ORDER BY age ASC
     )
     SELECT
     FROM
@@ -2088,19 +2136,11 @@ fn test_table_s_string() {
         @r###"
     WITH table_2 AS (
       SELECT
-        DISTINCT ON first_name,
-        id,
-        age
-      FROM
-        employees
-      ORDER BY
-        age ASC
+        DISTINCT ON first_name, id, age FROM employees ORDER BY age ASC
     ),
     table_3 AS (
       SELECT
-        *
-      FROM
-        salaries
+        * FROM salaries
     )
     SELECT
       table_0.*,
@@ -2118,9 +2158,7 @@ fn test_table_s_string() {
         @r###"
     WITH table_1 AS (
       SELECT
-        *
-      FROM
-        employees
+        * FROM employees
     )
     SELECT
       *
@@ -2138,9 +2176,7 @@ fn test_table_s_string() {
         @r###"
     WITH table_1 AS (
       SELECT
-        *
-      FROM
-        employees
+        * FROM employees
     )
     SELECT
       *
@@ -2160,11 +2196,7 @@ fn test_table_s_string() {
         @r###"
     WITH table_1 AS (
       SELECT
-        generate_series(
-          DATE '2022-06-03',
-          date(date_trunc('week', current_date)) + 4,
-          '1 week'
-        ) as date
+        generate_series(DATE '2022-06-03', date(date_trunc('week', current_date)) + 4, '1 week') as date
     )
     SELECT
     FROM
@@ -2178,9 +2210,7 @@ fn test_table_s_string() {
         @r###"
     WITH table_1 AS (
       SELECT
-        *
-      FROM
-        x
+        * FROM x
     )
     SELECT
     FROM

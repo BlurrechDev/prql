@@ -91,7 +91,10 @@ pub(super) fn translate_expr_kind(item: ExprKind, ctx: &mut Context) -> Result<s
         ExprKind::SString(s_string_items) => {
             let string = translate_sstring(s_string_items, ctx)?;
 
-            sql_ast::Expr::Identifier(sql_ast::Ident::new(string))
+            // Using five quotes to reduce the chance of a clash.
+            let string_to_avoid_formatting = format!("{}{}{}", "s\"\"\"\"\"", string, "z\"\"\"\"\"\"");
+
+            sql_ast::Expr::Identifier(sql_ast::Ident::new(string_to_avoid_formatting))
         }
         ExprKind::FString(f_string_items) => {
             let args = f_string_items
@@ -294,10 +297,12 @@ pub(super) fn translate_query_sstring(
 ) -> Result<sql_ast::Query> {
     let string = translate_sstring(items, context)?;
     if let Some(string) = string.trim().strip_prefix("SELECT ") {
+        let string_to_avoid_formatting = format!("{}{}{}", "s\"\"\"\"\"", string, "z\"\"\"\"\"\"");
+
         Ok(sql_ast::Query {
             body: Box::new(sql_ast::SetExpr::Select(Box::new(sql_ast::Select {
                 projection: vec![sql_ast::SelectItem::UnnamedExpr(sql_ast::Expr::Identifier(
-                    sql_ast::Ident::new(string),
+                    sql_ast::Ident::new(string_to_avoid_formatting),
                 ))],
                 distinct: false,
                 top: None,

@@ -21,23 +21,7 @@ pub fn compile(query: Query, options: Option<Options>) -> Result<String> {
 
     let sql_ast = translator::translate_query(query, options.target)?;
 
-    let sql = sql_ast.to_string();
-
-    // formatting
-    let sql = if options.format {
-        let formatted = sqlformat::format(
-            &sql,
-            &sqlformat::QueryParams::default(),
-            sqlformat::FormatOptions::default(),
-        );
-
-        // The sql formatter turns `{{` into `{ {`, and while that's reasonable SQL,
-        // we want to allow jinja expressions through. So we (somewhat hackily) replace
-        // any `{ {` with `{{`.
-        formatted.replace("{ {", "{{").replace("} }", "}}")
-    } else {
-        sql
-    };
+    let sql = format_if_required(sql_ast.to_string(), options.format);
 
     // signature
     let sql = if options.signature_comment {
@@ -53,6 +37,144 @@ pub fn compile(query: Query, options: Option<Options>) -> Result<String> {
     };
 
     Ok(sql)
+}
+
+fn get_substring(s: &str, start: usize, end: usize) -> Option<&str> {
+    s.get(start..end)
+}
+
+pub fn utf8_slice(s: &str, start: usize, end: usize) -> Option<&str> {
+    let mut iter = s.char_indices()
+        .map(|(pos, _)| pos)
+        .chain(Some(s.len()))
+        .skip(start)
+        .peekable();
+    let start_pos = *iter.peek()?;
+    for _ in start..end { iter.next(); }
+    Some(&s[start_pos..*iter.peek()?])
+}
+
+fn find_closing_delimiter(text: &str, open_pos: usize) -> usize {
+    let mut close_pos = open_pos;
+    let mut counter = 1;
+    while counter > 0 {
+        if close_pos + 7 > text.len() {
+            return 0;
+        }
+        let c = utf8_slice(text, close_pos + 1, close_pos + 7).unwrap_or("");
+
+        log::debug!("{}", c);
+
+        close_pos += 1;
+        if c == "s\"\"\"\"\"" {
+            counter += 1;
+        } else if c == "z\"\"\"\"\"" {
+            counter -= 1;
+        }
+    }
+    close_pos
+}
+
+pub fn extract_s_string_parameters(sql: String, mut parameters: Vec<(String, String)>, mut index: usize) -> (Vec<(String, String)>, usize) {
+    log::debug!("[START] Extracting s string parameters: {}", &sql);
+
+    if sql.is_empty() {
+        log::debug!("[RETURN] Returning as passed string is empty");
+        return (parameters.to_vec(), index)
+    }
+
+    let opening_s_string = "s\"\"\"\"\"";
+    let closing_s_string = "z\"\"\"\"\"\"";
+
+    let start_index = sql.find(opening_s_string).unwrap_or(0) + opening_s_string.len();
+    let end_index = find_closing_delimiter(&sql, start_index - 1);
+
+    log::debug!("[INDEX] start {} end {}", start_index, end_index);
+
+    let matched_string = get_substring(&sql, start_index, end_index).unwrap_or("");
+
+    if !matched_string.is_empty() {
+        log::debug!("[INNER] Extracting s string parameters: {}", &matched_string);
+
+        let parameter_identifier = "$s_string_".to_string() + &*index.to_string();
+
+        log::debug!("[PARAMETER] Parameter value determined: {}", matched_string.to_string());
+        log::debug!("[PARAMETER] Parameter identifier: {}", parameter_identifier.to_string());
+
+        parameters.push((parameter_identifier, matched_string.to_string()));
+    }
+
+    if end_index > 0 {
+        let matched_string = sql[(end_index + closing_s_string.len())..].to_string();
+
+        if !matched_string.is_empty() {
+            log::debug!("[OUTER] Extracting s string parameters: {}", &matched_string);
+
+            let (mut nested_parameters, nested_index) = extract_s_string_parameters(matched_string.to_string(), parameters.to_vec(), index + 1);
+
+            parameters.append(&mut nested_parameters);
+            index = nested_index
+        } else {
+            log::debug!("[RETURN] Returning as matced string is empty");
+        }
+    } else {
+        log::debug!("[RETURN] Returning as end_index = 0!");
+    }
+
+    (parameters, index)
+}
+
+// Parameterize s strings and format if options indicates that is is required.
+pub fn format_if_required(sql: String, needs_formatting: bool) -> String {
+    log::debug!("[SQL] {}", sql);
+
+    let mut sql_with_parameters = sql.clone();
+    let mut parameters = vec![];
+
+    let (parameters, _index) = extract_s_string_parameters(sql_with_parameters, parameters, 0);
+
+    let mut sql_with_parameters = sql.clone();
+
+    let opening_s_string = "s\"\"\"\"\"";
+    let closing_s_string = "z\"\"\"\"\"\"";
+
+    // We reverse the iteration so nested s strings work correctly.
+    for (parameter_identifier, s_string) in parameters.iter().rev() {
+        // Using five quotes to reduce the chance of a clash.
+        let s_string = ("s\"\"\"\"\"".to_owned() + s_string + "z\"\"\"\"\"\"").to_string();
+
+        log::debug!("[REPLACING] {} with {}", &s_string, &parameter_identifier);
+
+        sql_with_parameters = sql_with_parameters.replace(&s_string.to_string(), &parameter_identifier.to_string());
+    }
+
+    // formatting
+    let mut sql = if needs_formatting {
+        let formatted = sqlformat::format(
+            &sql_with_parameters,
+            &sqlformat::QueryParams::None, // This is intentionally unused because we need to replace params even if we do not format.
+            sqlformat::FormatOptions::default(),
+        );
+
+        // The sql formatter turns `{{` into `{ {`, and while that's reasonable SQL,
+        // we want to allow jinja expressions through. So we (somewhat hackily) replace
+        // any `{ {` with `{{`.
+        formatted.replace("{ {", "{{").replace("} }", "}}")
+    } else {
+        sql_with_parameters
+    };
+
+    log::debug!("[PARAMETERIZED SQL]\n{}", sql);
+
+    for (parameter_identifier, s_string) in parameters {
+        log::debug!("[REPLACING] {} with {}", &parameter_identifier, &s_string.replace(opening_s_string, "").replace(closing_s_string, ""));
+
+        sql = sql.replace("$ s_string_", "$s_string_"); // The formatter can sometimes incorrectly space this, so we manually correct it.
+        sql = sql.replace(&parameter_identifier, &s_string.to_string().replace(opening_s_string, "").replace(closing_s_string, ""));
+    }
+
+    // These should tags never appear in the final SQL.
+    sql.replace(opening_s_string, "").replace(closing_s_string, "")
 }
 
 /// Compilation options for SQL backend of the compiler.
